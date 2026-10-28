@@ -1,0 +1,68 @@
+name: Fork Build
+
+# CI for this fork: upstream's workflows rely on self-hosted "xcode-27" runners which aren't available here.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  clang-format:
+    runs-on: macos-26
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install clang-format
+      run: brew install clang-format
+    - name: Run clang-format
+      run: cd Scripts && ./run_clang_format.sh --check
+
+  build:
+    runs-on: macos-26
+    steps:
+    - name: Select the newest Xcode
+      run: |
+        ls -d /Applications/Xcode*.app
+        XC=$(ls -d /Applications/Xcode_*.app | grep -v -i beta | sort -V | tail -n 1)
+        echo "Using $XC"
+        sudo xcode-select -s "$XC"
+        xcodebuild -version
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        set -o pipefail
+        xcodebuild \
+          -project Source/NimbleCommander/NimbleCommander.xcodeproj \
+          -scheme NimbleCommander-NonMAS \
+          -configuration Release \
+          -derivedDataPath build \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGN_IDENTITY= \
+          DEVELOPMENT_TEAM= \
+          PROVISIONING_PROFILE_SPECIFIER= \
+          CODE_SIGN_ENTITLEMENTS= \
+          -parallelizeTargets \
+          build 2>&1 | tee xcodebuild.log | grep -E "error:|warning: |\*\* BUILD" || true
+        grep -q "\*\* BUILD SUCCEEDED \*\*" xcodebuild.log
+    - name: Package
+      run: |
+        APP=$(find build/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+        codesign --force --deep --sign - "$APP"
+        ditto -c -k --keepParent "$APP" NimbleCommander-unsigned.zip
+    - uses: actions/upload-artifact@v4
+      with:
+        name: nimble-commander-unsigned
+        path: NimbleCommander-unsigned.zip
+        if-no-files-found: error
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: build-log
+        path: xcodebuild.log
+        if-no-files-found: ignore
